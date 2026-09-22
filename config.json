@@ -5,13 +5,13 @@
   "author": "Custom",
   "description": "Automatically runs an ordered sequence of scripts and file deployments on newly enrolled devices, with retries, offline-resume, run-as-user option and a dashboard",
   "hasAdminPanel": true,
-  "homepage": "https://github.com/YOUR_GITHUB_USERNAME/meshcentral-autoonboard",
-  "changelogUrl": "https://raw.githubusercontent.com/YOUR_GITHUB_USERNAME/meshcentral-autoonboard/main/changelog.md",
-  "configUrl": "https://raw.githubusercontent.com/YOUR_GITHUB_USERNAME/meshcentral-autoonboard/main/config.json",
-  "downloadUrl": "https://github.com/YOUR_GITHUB_USERNAME/meshcentral-autoonboard/archive/main.zip",
+  "homepage": "https://github.com/formyexp/meshcentral-autoonboard",
+  "changelogUrl": "https://raw.githubusercontent.com/formyexp/meshcentral-autoonboard/main/changelog.md",
+  "configUrl": "https://raw.githubusercontent.com/formyexp/meshcentral-autoonboard/main/config.json",
+  "downloadUrl": "https://github.com/formyexp/meshcentral-autoonboard/archive/main.zip",
   "repository": {
     "type": "git",
-    "url": "https://github.com/YOUR_GITHUB_USERNAME/meshcentral-autoonboard.git"
+    "url": "https://github.com/formyexp/meshcentral-autoonboard.git"
   },
   "meshCentralCompat": ">=1.1.35"
 }
