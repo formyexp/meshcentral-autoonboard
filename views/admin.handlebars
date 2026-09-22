@@ -88,7 +88,7 @@ var files = [];
 var settings = { autoStartEnabled: true, webhookUrl: '' };
 
 function send(obj) {
-  try { parent.meshserver.send(obj); } catch (e) { console.log('send failed', e); }
+  try { parent.meshserver.send(JSON.stringify(obj)); } catch (e) { console.log('send failed', e); }
 }
 function confirmDlg(title, msg, cb) {
   try {

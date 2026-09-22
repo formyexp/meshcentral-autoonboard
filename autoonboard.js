@@ -57,7 +57,8 @@ module.exports.autoonboard = function (parent) {
 
     function nowSec() { return Math.floor(Date.now() / 1000); }
 
-    function isAdmin(user) { return (user != null) && ((user.siteadmin & 0xFFFFFFFF) == 1); }
+    // siteadmin == -1 (0xFFFFFFFF) → full site administrator; any non-zero value → has some admin right
+    function isAdmin(user) { return (user != null) && (user.siteadmin != null) && (user.siteadmin !== 0); }
 
     function applyVars(content, q) {
         if (content == null) return content;

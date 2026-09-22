@@ -33,7 +33,7 @@
 </div>
 </body>
 <script type="text/javascript">
-function send(obj) { try { parent.meshserver.send(obj); } catch (e) { console.log('send failed', e); } }
+function send(obj) { try { parent.meshserver.send(JSON.stringify(obj)); } catch (e) { console.log('send failed', e); } }
 function currentNodeId() { try { return parent.currentNode._id; } catch (e) { return null; } }
 
 function doOnLoad() {
