@@ -63,9 +63,11 @@
 
   <h2>Последовательность адаптации (скрипты и файлы)</h2>
   <div class="muted">Выполняются по порядку на каждом новом устройстве. В тексте скрипта и в пути назначения можно
-  использовать <code>{{deviceName}}</code> и <code>{{nodeId}}</code>. «Выполнить как вошедший пользователь» — для
-  случаев, когда SYSTEM (обычный контекст агента) не подходит; требует интернет на устройстве при первом запуске
-  (ставит модуль RunAsUser из PSGallery).</div>
+  использовать <code>{{deviceName}}</code> и <code>{{nodeId}}</code>.<br>
+  «Выполнить как вошедший пользователь» для <b>скриптов</b> — оборачивает через модуль RunAsUser (PSGallery),
+  требует интернет при первом запуске на устройстве.<br>
+  «Запустить как вошедший пользователь» для <b>файлов</b> — использует Планировщик задач Windows (тот же
+  механизм, что и у Удалённого файлового менеджера MeshCentral). Дополнительных модулей и интернета не требует.</div>
   <div id="stepsList"></div>
   <span class="btn" onclick="addStep('script');">+ Добавить шаг-скрипт</span>
   <span class="btn" onclick="addStep('file');">+ Добавить шаг-файл</span>
@@ -267,7 +269,8 @@ function fileFieldsHtml(s) {
   '<div class="fieldRow">' +
     '<label><input type="checkbox"' + (s.runAfter ? ' checked' : '') + ' onchange="updStep(\'' + s._id + '\',{runAfter:this.checked})" /> Запустить после копирования</label>' +
     (s.runAfter ? ('<label>Аргументы командной строки: <input type="text" value="' + escAttr(s.runArgs) + '" onchange="updStep(\'' + s._id + '\',{runArgs:this.value})" /></label>' +
-      '<label><input type="checkbox"' + (s.runAsUser ? ' checked' : '') + ' onchange="updStep(\'' + s._id + '\',{runAsUser:this.checked})" /> Запустить как вошедший пользователь (не SYSTEM)</label>') : '') +
+      '<label title="Использует Планировщик задач Windows (win-tasks / SCHTASKS) — тот же механизм, что и Удалённый файловый менеджер MeshCentral. Работает на Windows без дополнительных модулей и без доступа в интернет.">' +
+        '<input type="checkbox"' + (s.runAsUser ? ' checked' : '') + ' onchange="updStep(\'' + s._id + '\',{runAsUser:this.checked})" /> Запустить как вошедший пользователь (не SYSTEM) — через Планировщик задач</label>') : '') +
   '</div>';
 }
 

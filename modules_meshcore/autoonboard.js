@@ -279,10 +279,76 @@ function downloadToFile(url, destPath, cb, redirectsLeft) {
     } catch (e) { cb('' + e); }
 }
 
+// Launch the deployed file in the currently logged-in user's desktop session using
+// the same mechanism MeshCentral's Remote File Manager uses (openFileOnDesktop):
+//   Primary path  – require('win-tasks'): creates a Scheduled Task owned by the
+//                   console user, runs it immediately, then deletes it.
+//   Fallback path – SCHTASKS /RU <user> via PowerShell (same result, no native module).
+// Fire-and-forget: we queue the task and immediately report success; the launched
+// process continues on its own (installer, setup wizard, etc.).
+// Windows-only; on other platforms we fall back to normal SYSTEM-context execution.
+function launchFileAsUser(job) {
+    var destPath = job.destPath;
+    var runArgs  = job.runArgs || '';
+
+    if (process.platform !== 'win32') {
+        // Non-Windows: no interactive session concept, just report placement
+        finalizeJob(job, 'Файл размещён (запуск от имени пользователя поддерживается только на Windows): ' + destPath);
+        return;
+    }
+
+    try {
+        var userSessions = require('user-sessions');
+        var uid    = userSessions.consoleUid();
+        var user   = userSessions.getUsername(uid);
+        var domain = userSessions.getDomain(uid);
+
+        // ── Primary: win-tasks (built into MeshAgent, identical to File Manager) ──
+        try {
+            var winTasks = require('win-tasks');
+            var taskDef  = { name: 'AoOnboardTask', user: user, domain: domain, execPath: destPath };
+            if (runArgs) taskDef.arguments = [runArgs];  // single string; Task Scheduler handles it
+            winTasks.addTask(taskDef);
+            winTasks.getTask({ name: 'AoOnboardTask' }).run();
+            try { winTasks.deleteTask('AoOnboardTask'); } catch (ed) { }
+            finalizeJob(job, 'Файл запущен от имени пользователя (Task Scheduler / win-tasks): ' + destPath);
+            return;
+        } catch (e1) { dbg('win-tasks failed, trying SCHTASKS fallback: ' + e1); }
+
+        // ── Fallback: SCHTASKS /RU <user> via PowerShell ──────────────────────────
+        var env = {};
+        for (var k in process.env) { env[k] = process.env[k]; }
+        env['_target'] = destPath;
+        env['_args']   = runArgs;
+        env['_user']   = (domain ? domain + '\\' : '') + (user || '');
+
+        var child = require('child_process').execFile(
+            process.env['windir'] + '\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
+            ['powershell', '-noprofile', '-nologo', '-command', '-'],
+            { env: env }
+        );
+        child.stderr.on('data', function (c) { });
+        child.stdout.on('data', function (c) { });
+        child.stdin.write('SCHTASKS /CREATE /F /TN AoOnboardTask /SC ONCE /ST 00:00');
+        if (user) { child.stdin.write(' /RU $env:_user'); }
+        child.stdin.write(' /TR "$env:_target $env:_args"\r\n');
+        child.stdin.write('SCHTASKS /RUN /TN AoOnboardTask\r\n');
+        child.stdin.write('SCHTASKS /DELETE /F /TN AoOnboardTask\r\n');
+        child.stdin.write('exit\r\n');
+        child.waitExit();
+        finalizeJob(job, 'Файл запущен от имени пользователя (SCHTASKS): ' + destPath);
+
+    } catch (e) {
+        finalizeJob(job, null, 'Не удалось запустить файл от имени пользователя: ' + e);
+    }
+}
+
 // Places a file on disk (from base64 payload, or downloaded from a URL), optionally
-// verifies its checksum, and optionally runs a follow-up PS1 (built server-side,
-// e.g. "Start-Process <destPath>", possibly wrapped for RunAsUser) via the same
-// PowerShell runner used for ordinary script steps.
+// verifies its checksum, and then either:
+//  • job.runAfterAsUser === true  → launchFileAsUser() — Task Scheduler, user context
+//                                   (same mechanism as Remote File Manager)
+//  • job.runAfter && job.runScript → runPowerShell()   — Start-Process, SYSTEM context
+//  • otherwise                    → done, report placement only
 function runFileStep(job) {
     if (runningJobs[job.dispatchId] != null) { dbg('Duplicate dispatch for ' + job.dispatchId + ', ignoring.'); return; }
     armTimeout(job);
@@ -307,8 +373,14 @@ function runFileStep(job) {
                     }
                 } catch (e) { finalizeJob(job, null, 'Не удалось проверить контрольную сумму: ' + e); return; }
             }
-            if (job.runAfter && job.runScript) {
-                dbg('Running post-copy script for ' + job.dispatchId);
+
+            if (job.runAfter && job.runAfterAsUser) {
+                // ── "Run as user" path: Task Scheduler (same as File Manager) ──────
+                dbg('Launching post-copy file as user for ' + job.dispatchId);
+                launchFileAsUser(job);
+            } else if (job.runAfter && job.runScript) {
+                // ── Normal (SYSTEM) path: Start-Process via PS1 ───────────────────
+                dbg('Running post-copy script (SYSTEM) for ' + job.dispatchId);
                 // build a plain job object explicitly (avoid Object.assign/spread - not
                 // guaranteed available in the agent's embedded JS engine)
                 var runJob = {

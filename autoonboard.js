@@ -33,7 +33,8 @@ module.exports.autoonboard = function (parent) {
         'adminData',
         'nodeData',
         'queueUpdate',
-        'seedDone'
+        'seedDone',
+        'noStepsError'
     ];
 
     // =====================================================================
@@ -96,14 +97,13 @@ module.exports.autoonboard = function (parent) {
         ].join("\r\n");
     }
 
-    // Builds the little PS1 that places-and-optionally-runs a deployed file into
-    // the "runScript" the agent executes after a successful file write (reuses the
-    // exact same PowerShell runner already used for script steps).
+    // Builds the PS1 that Start-Process-launches a deployed file as SYSTEM.
+    // Only used when runAsUser is false (or absent).  When runAsUser is true the
+    // agent uses launchFileAsUser() (Windows Task Scheduler) instead – no PS1 needed.
     function buildFileRunScript(step, destPath) {
-        var inner = 'Start-Process -FilePath ' + psQuote(destPath) +
+        return 'Start-Process -FilePath ' + psQuote(destPath) +
             (step.runArgs ? (' -ArgumentList ' + psQuote(step.runArgs)) : '') +
             ' -Wait -PassThru | ForEach-Object { "Exit code: " + $_.ExitCode }';
-        return step.runAsUser ? wrapRunAsUserPS(inner) : inner;
     }
 
     // =====================================================================
@@ -122,9 +122,12 @@ module.exports.autoonboard = function (parent) {
                 if (q == null) {
                     return obj.db.getSettings().then(function (settings) {
                         if (settings.autoStartEnabled === false) return; // master switch off
-                        return obj.db.createQueue(nodeId, meshId, agentName(nodeId) || nodeId, 'pending').then(function (newQ) {
-                            obj.pushQueueUpdate();
-                            return obj.dispatchStep(newQ);
+                        return obj.db.getEnabledSteps().then(function (steps) {
+                            if (steps.length === 0) return; // no steps configured — don't create a hanging queue
+                            return obj.db.createQueue(nodeId, meshId, agentName(nodeId) || nodeId, 'pending').then(function (newQ) {
+                                obj.pushQueueUpdate();
+                                return obj.dispatchStep(newQ);
+                            });
                         });
                     });
                 } else if (q.status === 'waiting_offline' || q.status === 'pending') {
@@ -139,7 +142,15 @@ module.exports.autoonboard = function (parent) {
     // Dispatch (or re-dispatch) the current step of a queue entry.
     obj.dispatchStep = function (q) {
         return obj.db.getEnabledSteps().then(function (steps) {
-            if (steps.length === 0) return Promise.resolve(); // nothing configured yet
+            if (steps.length === 0) {
+                // No steps configured — if queue is stuck in an active state, mark it failed
+                // so the dashboard doesn't show "pending" forever with no explanation.
+                if (q.status === 'pending' || q.status === 'running' || q.status === 'waiting_offline') {
+                    return obj.db.updateQueue(q._id, { status: 'failed', lastError: 'Нет настроенных шагов адаптации. Добавьте шаги в My Server → Plugins → AutoOnboard.' })
+                        .then(function () { obj.pushQueueUpdate(); });
+                }
+                return Promise.resolve();
+            }
             if (q.currentStepIndex >= steps.length) {
                 return obj.finishQueue(q, 'completed');
             }
@@ -189,9 +200,20 @@ module.exports.autoonboard = function (parent) {
             return obj.db.updateQueue(q._id, { status: 'running', dispatchTime: dispatchTime, dispatchId: dispatchId, retryNotBefore: null })
                 .then(function () { obj.pushQueueUpdate(); });
         };
+        // Build the "run after copy" payload depending on whether the step
+        // wants user-context (Task Scheduler path) or SYSTEM (Start-Process PS1 path).
+        function makeRunExtra(resolvedDest) {
+            if (!step.runAfter) return {};
+            if (step.runAsUser) {
+                // Agent will use win-tasks / SCHTASKS (same as File Manager) – no PS1
+                return { runAfterAsUser: true, runArgs: step.runArgs || '' };
+            }
+            return { runScript: buildFileRunScript(step, resolvedDest) };
+        }
+
         if (step.sourceMode === 'url') {
-            var runScript = step.runAfter ? buildFileRunScript(step, applyVars(step.destPath, q)) : null;
-            return finish({ sourceMode: 'url', sourceUrl: step.sourceUrl, runScript: runScript });
+            var resolvedDest = applyVars(step.destPath, q);
+            return finish(Object.assign({ sourceMode: 'url', sourceUrl: step.sourceUrl }, makeRunExtra(resolvedDest)));
         }
         // sourceMode 'server' - read the stored file from disk
         return obj.db.getFile(step.fileId).then(function (fileDoc) {
@@ -207,8 +229,8 @@ module.exports.autoonboard = function (parent) {
             catch (e) {
                 return obj.finishQueue(q, 'failed', { lastError: 'Не удалось прочитать файл на сервере: ' + e });
             }
-            var runScript = step.runAfter ? buildFileRunScript(step, applyVars(step.destPath, q)) : null;
-            return finish({ sourceMode: 'server', fileDataB64: bytes.toString('base64'), sha256: fileDoc.sha256, runScript: runScript });
+            var resolvedDest = applyVars(step.destPath, q);
+            return finish(Object.assign({ sourceMode: 'server', fileDataB64: bytes.toString('base64'), sha256: fileDoc.sha256 }, makeRunExtra(resolvedDest)));
         });
     };
 
@@ -271,9 +293,12 @@ module.exports.autoonboard = function (parent) {
     // =====================================================================
 
     obj.handleAdminReq = function (req, res, user) {
-        if (isAdmin(user) && req.query.admin == 1) { res.render(obj.VIEWS + 'admin', {}); return; }
-        if (req.query.admin == 1) { res.sendStatus(401); return; }
-        if (req.query.user == 1) { res.render(obj.VIEWS + 'user', {}); return; }
+        // MeshCentral's goPlugin() opens /pluginadmin.ashx?pin=autoonboard with NO extra params.
+        // Treat that (and explicit ?admin=1) as the admin panel.
+        // Only ?user=1 routes to the per-device tab iframe.
+        if (req.query.user == '1') { res.render(obj.VIEWS + 'user', {}); return; }
+        // Everything else → admin panel (bare URL or ?admin=1)
+        if (isAdmin(user)) { res.render(obj.VIEWS + 'admin', {}); return; }
         res.sendStatus(401);
     };
 
@@ -488,14 +513,21 @@ module.exports.autoonboard = function (parent) {
                 break;
             case 'runOnboardingNow':
                 if (!isUserSession) return;
-                obj.db.getQueueByNode(command.nodeId).then(function (q) {
-                    if (q != null) {
-                        return obj.db.updateQueue(q._id, { currentStepIndex: 0, attempts: {}, status: 'pending', retryNotBefore: null, completedAt: null, lastError: null })
-                            .then(function () { return obj.db.getQueueById(q._id); }).then(obj.dispatchStep);
+                obj.db.getEnabledSteps().then(function (steps) {
+                    if (steps.length === 0) {
+                        // No steps configured — tell the browser immediately, don't create a hanging queue
+                        obj.meshServer.DispatchEvent(['*', 'server-users'], obj, { nolog: true, action: 'plugin', plugin: 'autoonboard', pluginaction: 'noStepsError', nodeId: command.nodeId });
+                        return;
                     }
-                    var agent = obj.meshServer.webserver.wsagents[command.nodeId];
-                    return obj.db.createQueue(command.nodeId, agent ? agent.dbMeshKey : null, agentName(command.nodeId) || command.nodeId, 'pending').then(obj.dispatchStep);
-                }).then(function () { obj.sendNodeData(command.nodeId); obj.sendAdminData(); });
+                    return obj.db.getQueueByNode(command.nodeId).then(function (q) {
+                        if (q != null) {
+                            return obj.db.updateQueue(q._id, { currentStepIndex: 0, attempts: {}, status: 'pending', retryNotBefore: null, completedAt: null, lastError: null })
+                                .then(function () { return obj.db.getQueueById(q._id); }).then(obj.dispatchStep);
+                        }
+                        var agent = obj.meshServer.webserver.wsagents[command.nodeId];
+                        return obj.db.createQueue(command.nodeId, agent ? agent.dbMeshKey : null, agentName(command.nodeId) || command.nodeId, 'pending').then(obj.dispatchStep);
+                    }).then(function () { obj.sendNodeData(command.nodeId); obj.sendAdminData(); });
+                });
                 break;
 
             default:
@@ -520,6 +552,7 @@ module.exports.autoonboard = function (parent) {
     obj.nodeData = function (message) { if (typeof pluginHandler.autoonboard.onNodeData == 'function') pluginHandler.autoonboard.onNodeData(message); };
     obj.queueUpdate = function (message) { if (typeof pluginHandler.autoonboard.onQueueUpdate == 'function') pluginHandler.autoonboard.onQueueUpdate(message); };
     obj.seedDone = function (message) { if (typeof pluginHandler.autoonboard.onSeedDone == 'function') pluginHandler.autoonboard.onSeedDone(message); };
+    obj.noStepsError = function (message) { if (typeof pluginHandler.autoonboard.onNoStepsError == 'function') pluginHandler.autoonboard.onNoStepsError(message); };
 
     return obj;
 };

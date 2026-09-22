@@ -24,6 +24,7 @@
 <div id="aoUser">
   <div id="statusBlock">Загрузка...</div>
   <span class="btn" onclick="runNow();">Запустить адаптацию сейчас</span>
+  &nbsp;<small class="muted">Для настройки шагов: <b>My Server → Plugins → кликнуть «AutoOnboard»</b></small>
   <hr />
   <h3>История выполнения</h3>
   <table id="histTbl">
@@ -77,6 +78,9 @@ parent.pluginHandler.autoonboard.onNodeData = function (message) {
   });
 };
 parent.pluginHandler.autoonboard.onQueueUpdate = function () { doOnLoad(); };
+parent.pluginHandler.autoonboard.onNoStepsError = function () {
+  alert('Шаги адаптации не настроены. Перейдите в My Server → Plugins → AutoOnboard и добавьте хотя бы один шаг.');
+};
 
 function runNow() {
   var nid = currentNodeId();
