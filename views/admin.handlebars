@@ -1,0 +1,356 @@
+<html>
+<head>
+    <script type="text/javascript" src="scripts/common-0.0.1.js"></script>
+</head>
+<style>
+    body { font-family: "Trebuchet MS", Arial, Helvetica, sans-serif; font-size: 13px; margin: 8px; }
+    h2 { font-size: 16px; margin: 14px 0 6px 0; }
+    table { border-collapse: collapse; width: 100%; margin-bottom: 10px; }
+    th, td { border: 1px solid #ccc; padding: 4px 6px; text-align: left; vertical-align: top; }
+    th { background: #eee; }
+    tr.qRow:nth-child(even) { background: #f7f7f7; }
+    textarea { width: 100%; height: 90px; font-family: Consolas, monospace; font-size: 12px; box-sizing: border-box; }
+    input[type=text], input[type=number], select { box-sizing: border-box; }
+    .small { width: 70px; }
+    .btn { cursor: pointer; padding: 3px 8px; border: 1px solid #999; background: #f0f0f0; border-radius: 3px; margin-right: 4px; display: inline-block; }
+    .btn:hover { background: #e0e0e0; }
+    .btn.primary { background: #2a7ae2; color: #fff; border-color: #1a5fb4; }
+    .badge { padding: 2px 6px; border-radius: 3px; color: #fff; font-size: 11px; }
+    .kbadge { padding: 1px 6px; border-radius: 3px; color: #fff; font-size: 11px; margin-left: 6px; }
+    .k-script { background: #6a5acd; }
+    .k-file { background: #0a8a6a; }
+    .b-pending { background: #999; }
+    .b-running { background: #2a7ae2; }
+    .b-waiting_offline { background: #e08a00; }
+    .b-completed { background: #2aa02a; }
+    .b-failed { background: #c0392b; }
+    .b-seeded { background: #777; }
+    .hist { display: none; background: #fafafa; }
+    .muted { color: #777; font-size: 11px; }
+    .settingsBox { border: 1px solid #ccc; padding: 8px; margin-bottom: 12px; background: #fafafa; }
+    .warn { color: #c0392b; font-weight: bold; }
+    .ok { color: #2aa02a; font-weight: bold; }
+    .stepCard { border: 1px solid #bbb; border-radius: 4px; margin-bottom: 8px; padding: 8px; background: #fff; }
+    .stepHead { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; flex-wrap: wrap; }
+    .stepHead input[type=text] { flex: 1; min-width: 160px; }
+    .fieldRow { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; margin: 4px 0; }
+    .fieldRow label { white-space: nowrap; }
+    .fieldRow input[type=text] { flex: 1; min-width: 140px; }
+</style>
+<body onload="doOnLoad();">
+<div id="aoAdmin">
+
+  <h2>Настройки</h2>
+  <div class="settingsBox">
+    <label><input type="checkbox" id="autoStartEnabled" /> Автозапуск адаптации для новых устройств включён</label><br /><br />
+    Webhook URL (необязательно, POST-уведомление при завершении/ошибке): <br />
+    <input type="text" id="webhookUrl" style="width: 420px;" placeholder="https://..." /><br /><br />
+    <span class="btn" onclick="saveSettings();">Сохранить настройки</span>
+    <span class="btn" onclick="seedExisting();">Отметить все текущие устройства как уже настроенные</span>
+    <div class="muted">Сделайте это один раз сразу после установки плагина, ДО включения автозапуска — иначе он запустится
+    и на всех уже работающих машинах при их следующем подключении к серверу.</div>
+    <div id="seedResult"></div>
+  </div>
+
+  <h2>Файлы (хранятся на сервере MeshCentral)</h2>
+  <div class="muted">Загрузите сюда установщики/утилиты один раз — потом выбирайте их в шагах-файлах ниже.</div>
+  <input type="file" id="fileInput" />
+  <span class="btn" onclick="uploadSelectedFile();">Загрузить файл</span>
+  <span id="uploadStatus" class="muted"></span>
+  <table id="filesTbl">
+    <tr><th>Имя</th><th style="width:100px;">Размер</th><th style="width:170px;">Загружен</th><th style="width:80px;">Действия</th></tr>
+  </table>
+
+  <h2>Последовательность адаптации (скрипты и файлы)</h2>
+  <div class="muted">Выполняются по порядку на каждом новом устройстве. В тексте скрипта и в пути назначения можно
+  использовать <code>{{deviceName}}</code> и <code>{{nodeId}}</code>. «Выполнить как вошедший пользователь» — для
+  случаев, когда SYSTEM (обычный контекст агента) не подходит; требует интернет на устройстве при первом запуске
+  (ставит модуль RunAsUser из PSGallery).</div>
+  <div id="stepsList"></div>
+  <span class="btn" onclick="addStep('script');">+ Добавить шаг-скрипт</span>
+  <span class="btn" onclick="addStep('file');">+ Добавить шаг-файл</span>
+
+  <h2>Устройства — статус адаптации</h2>
+  <table id="queueTbl">
+    <tr>
+      <th>Устройство</th><th>Статус</th><th>Шаг</th><th>Попытки</th><th>Начато</th><th>Обновлено</th><th>Последняя ошибка</th><th style="width:230px;">Действия</th>
+    </tr>
+  </table>
+</div>
+</body>
+<script type="text/javascript">
+var steps = [];
+var queue = [];
+var history = [];
+var files = [];
+var settings = { autoStartEnabled: true, webhookUrl: '' };
+
+function send(obj) {
+  try { parent.meshserver.send(obj); } catch (e) { console.log('send failed', e); }
+}
+function confirmDlg(title, msg, cb) {
+  try {
+    if (typeof parent.setDialogMode == 'function') { parent.setDialogMode(2, title, 3, function () { cb(); }, msg); return; }
+  } catch (e) { }
+  if (window.confirm(title + '\n' + msg)) cb();
+}
+
+function doOnLoad() {
+  send({ action: 'plugin', plugin: 'autoonboard', pluginaction: 'loadAdminData' });
+}
+
+parent.pluginHandler = parent.pluginHandler || {};
+parent.pluginHandler.autoonboard = parent.pluginHandler.autoonboard || {};
+parent.pluginHandler.autoonboard.onAdminData = function (message) {
+  var ev = message.event || message;
+  steps = ev.steps || [];
+  settings = ev.settings || settings;
+  queue = ev.queue || [];
+  history = ev.history || [];
+  files = ev.files || [];
+  document.getElementById('autoStartEnabled').checked = (settings.autoStartEnabled !== false);
+  document.getElementById('webhookUrl').value = settings.webhookUrl || '';
+  redrawFiles();
+  redrawSteps();
+  redrawQueue();
+};
+parent.pluginHandler.autoonboard.onQueueUpdate = function () {
+  send({ action: 'plugin', plugin: 'autoonboard', pluginaction: 'loadAdminData' });
+};
+parent.pluginHandler.autoonboard.onSeedDone = function (message) {
+  var ev = message.event || message;
+  document.getElementById('seedResult').innerHTML = '<span class="ok">Готово. Проверено устройств: ' + ev.count + '.</span>';
+};
+
+function saveSettings() {
+  var fields = {
+    autoStartEnabled: document.getElementById('autoStartEnabled').checked,
+    webhookUrl: document.getElementById('webhookUrl').value
+  };
+  send({ action: 'plugin', plugin: 'autoonboard', pluginaction: 'saveSettings', fields: fields });
+}
+function seedExisting() {
+  confirmDlg('Отметить текущие устройства', 'Все устройства, сейчас подключённые к серверу, будут помечены как уже настроенные (адаптация запускаться на них не будет). Продолжить?', function () {
+    document.getElementById('seedResult').innerHTML = 'Выполняется...';
+    send({ action: 'plugin', plugin: 'autoonboard', pluginaction: 'seedExisting' });
+  });
+}
+
+function fld(s, name, def) { return (s[name] === undefined || s[name] === null) ? def : s[name]; }
+function escHtml(s) { return (s == null ? '' : s + '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+function escAttr(s) { return (s == null ? '' : s + '').replace(/&/g, '&amp;').replace(/"/g, '&quot;'); }
+function fmtBytes(n) { if (!n) return '0 Б'; var u = ['Б', 'КБ', 'МБ', 'ГБ']; var i = 0; while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; } return n.toFixed(i ? 1 : 0) + ' ' + u[i]; }
+function fmtTime(t) { if (!t) return '—'; var d = new Date(t * 1000); return d.toLocaleString(); }
+
+// ---------------- Files ----------------
+function uploadSelectedFile() {
+  var inp = document.getElementById('fileInput');
+  if (!inp.files || !inp.files.length) { window.alert('Выберите файл'); return; }
+  var file = inp.files[0];
+  var uploadId = 'u' + Date.now() + Math.random().toString(36).slice(2);
+  var chunkSize = 256 * 1024;
+  var offset = 0;
+  var statusEl = document.getElementById('uploadStatus');
+  statusEl.innerHTML = 'Загрузка 0%...';
+  send({ action: 'plugin', plugin: 'autoonboard', pluginaction: 'uploadFileStart', uploadId: uploadId, name: file.name });
+  function readNext() {
+    if (offset >= file.size) {
+      send({ action: 'plugin', plugin: 'autoonboard', pluginaction: 'uploadFileEnd', uploadId: uploadId });
+      statusEl.innerHTML = 'Обработка на сервере...';
+      return;
+    }
+    var slice = file.slice(offset, offset + chunkSize);
+    var reader = new FileReader();
+    reader.onload = function (e) {
+      var bytes = new Uint8Array(e.target.result);
+      var binary = '';
+      for (var i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+      var b64 = btoa(binary);
+      send({ action: 'plugin', plugin: 'autoonboard', pluginaction: 'uploadFileChunk', uploadId: uploadId, chunkB64: b64 });
+      offset += chunkSize;
+      statusEl.innerHTML = 'Загрузка ' + Math.min(100, Math.round(offset / file.size * 100)) + '%...';
+      readNext();
+    };
+    reader.onerror = function () { statusEl.innerHTML = 'Ошибка чтения файла в браузере.'; };
+    reader.readAsArrayBuffer(slice);
+  }
+  readNext();
+}
+function redrawFiles() {
+  var tbl = document.getElementById('filesTbl');
+  var rows = tbl.querySelectorAll('.fRow');
+  rows.forEach(function (r) { r.parentNode.removeChild(r); });
+  if (files.length === 0) {
+    var tr = tbl.insertRow(-1); tr.className = 'fRow';
+    tr.innerHTML = '<td colspan="4" class="muted">Файлов пока нет</td>';
+    return;
+  }
+  files.forEach(function (f) {
+    var tr = tbl.insertRow(-1);
+    tr.className = 'fRow';
+    tr.innerHTML = '<td>' + escHtml(f.name) + '</td><td>' + fmtBytes(f.sizeBytes) + '</td><td>' + fmtTime(f.uploadedAt) + '</td>' +
+      '<td><span class="btn" onclick="delFile(\'' + f._id + '\')">Удалить</span></td>';
+  });
+}
+function delFile(id) {
+  confirmDlg('Удалить файл', 'Удалить файл с сервера? Шаги, которые его используют, перестанут работать.', function () {
+    send({ action: 'plugin', plugin: 'autoonboard', pluginaction: 'deleteFile', id: id });
+  });
+}
+
+// ---------------- Steps ----------------
+function addStep(kind) {
+  send({ action: 'plugin', plugin: 'autoonboard', pluginaction: 'addStep', kind: kind, name: (kind == 'file' ? 'Новый файл' : 'Новый скрипт'), content: '', filetype: 'ps1' });
+}
+function updStep(id, fields) {
+  send({ action: 'plugin', plugin: 'autoonboard', pluginaction: 'updateStep', id: id, fields: fields });
+}
+function delStep(id) {
+  confirmDlg('Удалить шаг', 'Удалить этот шаг из последовательности?', function () {
+    send({ action: 'plugin', plugin: 'autoonboard', pluginaction: 'deleteStep', id: id });
+  });
+}
+function moveStep(id, dir) {
+  var ids = steps.map(function (s) { return s._id; });
+  var i = ids.indexOf(id);
+  var j = i + dir;
+  if (j < 0 || j >= ids.length) return;
+  var tmp = ids[i]; ids[i] = ids[j]; ids[j] = tmp;
+  send({ action: 'plugin', plugin: 'autoonboard', pluginaction: 'reorderSteps', orderedIds: ids });
+}
+
+function commonFieldsHtml(s) {
+  return '<div class="fieldRow">' +
+    '<label>Повторов при ошибке: <input type="number" class="small" min="0" value="' + fld(s, 'maxRetries', 3) + '" onchange="updStep(\'' + s._id + '\',{maxRetries:parseInt(this.value)||0})" /></label>' +
+    '<label>Задержка между повторами (мин): <input type="number" class="small" min="0" value="' + fld(s, 'retryDelayMin', 5) + '" onchange="updStep(\'' + s._id + '\',{retryDelayMin:parseInt(this.value)||0})" /></label>' +
+    '<label>Таймаут (мин): <input type="number" class="small" min="1" value="' + fld(s, 'timeoutMin', 10) + '" onchange="updStep(\'' + s._id + '\',{timeoutMin:parseInt(this.value)||1})" /></label>' +
+    '<label><input type="checkbox"' + (s.enabled !== false ? ' checked' : '') + ' onchange="updStep(\'' + s._id + '\',{enabled:this.checked})" /> Включён</label>' +
+    '<label>Если попытки закончились: <select onchange="updStep(\'' + s._id + '\',{continueOnFail:(this.value==\'skip\')})">' +
+      '<option value="stop"' + (!s.continueOnFail ? ' selected' : '') + '>Остановить цепочку</option>' +
+      '<option value="skip"' + (s.continueOnFail ? ' selected' : '') + '>Пропустить и продолжить</option>' +
+    '</select></label>' +
+  '</div>';
+}
+
+function scriptFieldsHtml(s) {
+  return '<div class="fieldRow">' +
+    '<label>Тип: <select onchange="updStep(\'' + s._id + '\',{filetype:this.value})">' +
+      '<option value="ps1"' + (s.filetype == 'ps1' ? ' selected' : '') + '>PowerShell (.ps1)</option>' +
+      '<option value="bat"' + (s.filetype == 'bat' ? ' selected' : '') + '>BAT</option>' +
+      '<option value="bash"' + (s.filetype == 'bash' ? ' selected' : '') + '>Bash</option>' +
+    '</select></label>' +
+    '<label' + ((s.filetype || 'ps1') != 'ps1' ? ' style="opacity:.4" title="Доступно только для PowerShell"' : '') + '>' +
+      '<input type="checkbox"' + (s.runAsUser ? ' checked' : '') + (((s.filetype || 'ps1') != 'ps1') ? ' disabled' : '') +
+      ' onchange="updStep(\'' + s._id + '\',{runAsUser:this.checked})" /> Выполнить как вошедший пользователь (не SYSTEM)</label>' +
+  '</div>' +
+  '<textarea onchange="updStep(\'' + s._id + '\',{content:this.value})" placeholder="Текст скрипта...">' + escHtml(s.content) + '</textarea>';
+}
+
+function fileFieldsHtml(s) {
+  var fileOptions = '<option value="">— выберите файл —</option>' + files.map(function (f) {
+    return '<option value="' + f._id + '"' + (s.fileId == f._id ? ' selected' : '') + '>' + escHtml(f.name) + ' (' + fmtBytes(f.sizeBytes) + ')</option>';
+  }).join('');
+  var srcBlock = (s.sourceMode === 'url')
+    ? '<label>URL файла: <input type="text" value="' + escAttr(s.sourceUrl) + '" placeholder="https://.../installer.exe" onchange="updStep(\'' + s._id + '\',{sourceUrl:this.value})" /></label>'
+    : '<label>Файл с сервера: <select onchange="updStep(\'' + s._id + '\',{fileId:this.value})">' + fileOptions + '</select></label>';
+  return '<div class="fieldRow">' +
+    '<label>Источник: <select onchange="updStep(\'' + s._id + '\',{sourceMode:this.value})">' +
+      '<option value="server"' + (s.sourceMode !== 'url' ? ' selected' : '') + '>Хранится на сервере меша</option>' +
+      '<option value="url"' + (s.sourceMode === 'url' ? ' selected' : '') + '>По прямой ссылке (URL)</option>' +
+    '</select></label>' +
+    srcBlock +
+  '</div>' +
+  '<div class="fieldRow">' +
+    '<label>Путь назначения на устройстве: <input type="text" style="width:320px" value="' + escAttr(s.destPath) + '" placeholder="C:\\Deploy\\installer.exe" onchange="updStep(\'' + s._id + '\',{destPath:this.value})" /></label>' +
+    '<label><input type="checkbox"' + (s.skipIfExists ? ' checked' : '') + ' onchange="updStep(\'' + s._id + '\',{skipIfExists:this.checked})" /> Не копировать повторно, если файл уже там есть</label>' +
+  '</div>' +
+  '<div class="fieldRow">' +
+    '<label><input type="checkbox"' + (s.runAfter ? ' checked' : '') + ' onchange="updStep(\'' + s._id + '\',{runAfter:this.checked})" /> Запустить после копирования</label>' +
+    (s.runAfter ? ('<label>Аргументы командной строки: <input type="text" value="' + escAttr(s.runArgs) + '" onchange="updStep(\'' + s._id + '\',{runArgs:this.value})" /></label>' +
+      '<label><input type="checkbox"' + (s.runAsUser ? ' checked' : '') + ' onchange="updStep(\'' + s._id + '\',{runAsUser:this.checked})" /> Запустить как вошедший пользователь (не SYSTEM)</label>') : '') +
+  '</div>';
+}
+
+function redrawSteps() {
+  var list = document.getElementById('stepsList');
+  list.innerHTML = '';
+  steps.forEach(function (s, idx) {
+    var div = document.createElement('div');
+    div.className = 'stepCard';
+    var upDown = (idx > 0 ? '<span class="btn" onclick="moveStep(\'' + s._id + '\',-1)">↑</span>' : '') +
+                 (idx < steps.length - 1 ? '<span class="btn" onclick="moveStep(\'' + s._id + '\',1)">↓</span>' : '');
+    div.innerHTML =
+      '<div class="stepHead">' +
+        '<b>#' + (idx + 1) + '</b>' +
+        '<input type="text" value="' + escAttr(s.name) + '" onchange="updStep(\'' + s._id + '\',{name:this.value})" />' +
+        '<span class="kbadge k-' + (s.kind || 'script') + '">' + (s.kind == 'file' ? 'ФАЙЛ' : 'СКРИПТ') + '</span>' +
+        upDown +
+        '<span class="btn" onclick="delStep(\'' + s._id + '\')">Удалить шаг</span>' +
+      '</div>' +
+      commonFieldsHtml(s) +
+      (s.kind == 'file' ? fileFieldsHtml(s) : scriptFieldsHtml(s));
+    list.appendChild(div);
+  });
+  if (steps.length === 0) list.innerHTML = '<div class="muted">Шагов пока нет — добавьте первый ниже.</div>';
+}
+
+function statusRu(s) {
+  return { pending: 'В очереди', running: 'Выполняется', waiting_offline: 'Ждёт подключения', completed: 'Завершено', failed: 'Ошибка', seeded: 'Уже настроено (пропущено)' }[s] || s;
+}
+
+function redrawQueue() {
+  var tbl = document.getElementById('queueTbl');
+  var rows = tbl.querySelectorAll('.qRow, .hist');
+  rows.forEach(function (r) { r.parentNode.removeChild(r); });
+  queue.forEach(function (q) {
+    var stepName = (steps[q.currentStepIndex] ? steps[q.currentStepIndex].name : (q.status == 'completed' || q.status == 'seeded' ? '—' : '(шаги закончились)'));
+    var attemptsTxt = Object.keys(q.attempts || {}).map(function (sid) { return (q.attempts[sid]) + 'x'; }).join(', ') || '—';
+    var tr = tbl.insertRow(-1);
+    tr.className = 'qRow';
+    tr.innerHTML =
+      '<td>' + escHtml(q.deviceName) + '<div class="muted">' + q.node + '</div></td>' +
+      '<td><span class="badge b-' + q.status + '">' + statusRu(q.status) + '</span></td>' +
+      '<td>' + (q.currentStepIndex + 1) + '. ' + escHtml(stepName) + '</td>' +
+      '<td>' + attemptsTxt + '</td>' +
+      '<td>' + fmtTime(q.startedAt) + '</td>' +
+      '<td>' + fmtTime(q.updatedAt) + '</td>' +
+      '<td>' + (q.lastError ? ('<span class="warn" title="' + escAttr(q.lastError) + '">' + escHtml((q.lastError + '').substring(0, 40)) + '…</span>') : '—') + '</td>' +
+      '<td>' +
+        '<span class="btn" onclick="toggleHist(\'' + q._id + '\')">История</span>' +
+        '<span class="btn" onclick="qAction(\'retryNow\',\'' + q._id + '\')">Повторить</span>' +
+        '<span class="btn" onclick="qAction(\'skipStep\',\'' + q._id + '\')">Пропустить шаг</span>' +
+        '<span class="btn" onclick="qAction(\'restartOnboarding\',\'' + q._id + '\')">Перезапуск</span>' +
+        '<span class="btn" onclick="qDelete(\'' + q._id + '\')">Удалить</span>' +
+      '</td>';
+    var histTr = tbl.insertRow(-1);
+    histTr.className = 'hist';
+    histTr.id = 'hist_' + q._id;
+    var hRows = history.filter(function (h) { return h.queueId == q._id; });
+    var hHtml = '<table><tr><th>Время</th><th>Шаг</th><th>Попытка</th><th>Итог</th><th>Вывод / Ошибка</th></tr>';
+    hRows.forEach(function (h) {
+      hHtml += '<tr><td>' + fmtTime(h.completeTime) + '</td><td>' + escHtml(h.stepName) + '</td><td>' + h.attempt + '</td>' +
+        '<td>' + (h.success ? '<span class="ok">успех</span>' : '<span class="warn">ошибка</span>') + '</td>' +
+        '<td>' + escHtml((h.success ? h.output : h.error) || '') + '</td></tr>';
+    });
+    if (hRows.length == 0) hHtml += '<tr><td colspan="5" class="muted">Пока нет записей</td></tr>';
+    hHtml += '</table>';
+    var td = document.createElement('td');
+    td.colSpan = 8;
+    td.innerHTML = hHtml;
+    histTr.appendChild(td);
+  });
+}
+function toggleHist(id) {
+  var el = document.getElementById('hist_' + id);
+  el.style.display = (el.style.display == 'table-row') ? 'none' : 'table-row';
+}
+function qAction(action, queueId) {
+  send({ action: 'plugin', plugin: 'autoonboard', pluginaction: action, queueId: queueId });
+}
+function qDelete(queueId) {
+  confirmDlg('Удалить запись', 'Удалить запись об адаптации этого устройства из истории?', function () {
+    send({ action: 'plugin', plugin: 'autoonboard', pluginaction: 'deleteQueueEntry', queueId: queueId });
+  });
+}
+</script>
+</html>

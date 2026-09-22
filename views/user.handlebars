@@ -1,0 +1,87 @@
+<html>
+<head>
+    <script type="text/javascript" src="scripts/common-0.0.1.js"></script>
+</head>
+<style>
+    body { font-family: "Trebuchet MS", Arial, Helvetica, sans-serif; font-size: 13px; margin: 8px; }
+    table { border-collapse: collapse; width: 100%; margin-bottom: 10px; }
+    th, td { border: 1px solid #ccc; padding: 4px 6px; text-align: left; vertical-align: top; }
+    th { background: #eee; }
+    .btn { cursor: pointer; padding: 3px 8px; border: 1px solid #999; background: #f0f0f0; border-radius: 3px; margin-right: 4px; display: inline-block; }
+    .btn:hover { background: #e0e0e0; }
+    .badge { padding: 2px 6px; border-radius: 3px; color: #fff; font-size: 11px; }
+    .b-pending { background: #999; }
+    .b-running { background: #2a7ae2; }
+    .b-waiting_offline { background: #e08a00; }
+    .b-completed { background: #2aa02a; }
+    .b-failed { background: #c0392b; }
+    .b-seeded { background: #777; }
+    .ok { color: #2aa02a; font-weight: bold; }
+    .warn { color: #c0392b; font-weight: bold; }
+    .muted { color: #777; font-size: 11px; }
+</style>
+<body onload="doOnLoad();">
+<div id="aoUser">
+  <div id="statusBlock">Загрузка...</div>
+  <span class="btn" onclick="runNow();">Запустить адаптацию сейчас</span>
+  <hr />
+  <h3>История выполнения</h3>
+  <table id="histTbl">
+    <tr><th>Время</th><th>Шаг</th><th>Попытка</th><th>Итог</th><th>Вывод / Ошибка</th></tr>
+  </table>
+</div>
+</body>
+<script type="text/javascript">
+function send(obj) { try { parent.meshserver.send(obj); } catch (e) { console.log('send failed', e); } }
+function currentNodeId() { try { return parent.currentNode._id; } catch (e) { return null; } }
+
+function doOnLoad() {
+  var nid = currentNodeId();
+  if (nid == null) { document.getElementById('statusBlock').innerHTML = 'Не удалось определить устройство.'; return; }
+  send({ action: 'plugin', plugin: 'autoonboard', pluginaction: 'loadNodeStatus', nodeId: nid });
+}
+
+parent.pluginHandler = parent.pluginHandler || {};
+parent.pluginHandler.autoonboard = parent.pluginHandler.autoonboard || {};
+
+function statusRu(s) {
+  return { pending: 'В очереди', running: 'Выполняется', waiting_offline: 'Ждёт подключения устройства', completed: 'Завершено', failed: 'Ошибка', seeded: 'Уже настроено (пропущено)' }[s] || s;
+}
+function fmtTime(t) { if (!t) return '—'; var d = new Date(t * 1000); return d.toLocaleString(); }
+function escHtml(s) { return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+
+parent.pluginHandler.autoonboard.onNodeData = function (message) {
+  var ev = message.event || message;
+  if (ev.nodeId != currentNodeId()) return;
+  var q = ev.queue;
+  var html;
+  if (q == null) {
+    html = 'Для этого устройства адаптация ещё не запускалась.';
+  } else {
+    html = 'Статус: <span class="badge b-' + q.status + '">' + statusRu(q.status) + '</span>' +
+      '<br />Текущий шаг: ' + (q.currentStepIndex + 1) +
+      '<br />Начато: ' + fmtTime(q.startedAt) + ', обновлено: ' + fmtTime(q.updatedAt) +
+      (q.lastError ? ('<br /><span class="warn">Последняя ошибка: ' + escHtml(q.lastError) + '</span>') : '');
+  }
+  document.getElementById('statusBlock').innerHTML = html;
+
+  var tbl = document.getElementById('histTbl');
+  var rows = tbl.querySelectorAll('.hRow');
+  rows.forEach(function (r) { r.parentNode.removeChild(r); });
+  (ev.history || []).forEach(function (h) {
+    var tr = tbl.insertRow(-1);
+    tr.className = 'hRow';
+    tr.innerHTML = '<td>' + fmtTime(h.completeTime) + '</td><td>' + escHtml(h.stepName) + '</td><td>' + h.attempt + '</td>' +
+      '<td>' + (h.success ? '<span class="ok">успех</span>' : '<span class="warn">ошибка</span>') + '</td>' +
+      '<td>' + escHtml((h.success ? h.output : h.error) || '') + '</td>';
+  });
+};
+parent.pluginHandler.autoonboard.onQueueUpdate = function () { doOnLoad(); };
+
+function runNow() {
+  var nid = currentNodeId();
+  if (nid == null) return;
+  send({ action: 'plugin', plugin: 'autoonboard', pluginaction: 'runOnboardingNow', nodeId: nid });
+}
+</script>
+</html>
