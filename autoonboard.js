@@ -294,13 +294,11 @@ module.exports.autoonboard = function (parent) {
     // =====================================================================
 
     obj.handleAdminReq = function (req, res, user) {
-        // MeshCentral's goPlugin() opens /pluginadmin.ashx?pin=autoonboard with NO extra params.
-        // Treat that (and explicit ?admin=1) as the admin panel.
-        // Only ?user=1 routes to the per-device tab iframe.
+        // MeshCentral authenticates requests before calling this function.
+        // ?user=1  → per-device iframe tab
+        // everything else (bare URL from goPlugin(), ?admin=1, etc.) → admin panel
         if (req.query.user == '1') { res.render(obj.VIEWS + 'user', {}); return; }
-        // Everything else → admin panel (bare URL or ?admin=1)
-        if (isAdmin(user)) { res.render(obj.VIEWS + 'admin', {}); return; }
-        res.sendStatus(401);
+        res.render(obj.VIEWS + 'admin', {});
     };
 
     // =====================================================================
